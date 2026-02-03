@@ -1,0 +1,20 @@
+# Fichiers compilés
+*.o
+*.app
+Makefile
+.qmake.stash
+
+# Fichiers macOS
+.DS_Store
+
+# Build artifacts
+build/
+retawny.app/
+
+# Anciens fichiers
+readme.txt
+*.o
+*.app
+Makefile
+.qmake.stash
+.DS_Store
