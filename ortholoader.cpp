@@ -497,23 +497,39 @@ bool OrthoLoader::generateVoronoiMasks(double overlapMargin, QString *errorMessa
 					}
 				}
 
-				// If current tile is the closest valid one
-				if (closestIdx == tileIdx) {
-					// Distance to Voronoi frontier
-					const double distToFrontier = (secondMinDist - minDist) / 2.0;
-
-					if (distToFrontier >= overlapMargin) {
-						// Full ownership zone - pixel is far from frontier
+				// Distance from frontier: positive = towards our center, negative = towards other center
+				const double distToFrontier = (secondMinDist - minDist) / 2.0;
+				
+				// Include pixels up to overlapMargin BEYOND the Voronoi frontier
+				// This means accepting pixels even when we're NOT the closest, if we're close enough
+				const bool weAreClosest = (closestIdx == tileIdx);
+				
+				// Calculate how far we are from the frontier
+				// If we're closest: distToFrontier is positive (good)
+				// If we're not closest: we want to check if secondMinDist - ourDist < 2*overlapMargin
+				double distanceFromFrontier;
+				if (weAreClosest) {
+					distanceFromFrontier = distToFrontier;
+				} else {
+					// We're not closest, but we might still be within overlap range
+					distanceFromFrontier = -distToFrontier; // Invert
+				}
+				
+				// Accept if within overlapMargin of frontier
+				if (distanceFromFrontier >= -overlapMargin) {
+					if (distanceFromFrontier >= overlapMargin) {
+						// Far from frontier: full ownership
 						maskRow[localX] = 255;
 					} else {
-						// Transition zone with gradient
-						// distToFrontier close to 0 (at frontier) → ratio ≈ 0 → mask ≈ 0 (transparent)
-						// distToFrontier = overlapMargin (far) → ratio = 1 → mask = 255 (opaque)
-						const double ratio = distToFrontier / overlapMargin;
+						// Near frontier: gradient
+						// At frontier (dist=0): 255
+						// At -overlapMargin: 0
+						// At +overlapMargin: 255
+						const double ratio = (distanceFromFrontier + overlapMargin) / (2.0 * overlapMargin);
 						maskRow[localX] = static_cast<uchar>(ratio * 255.0);
 					}
 				}
-				// else: pixel belongs to another tile, leave at 0
+				// else: pixel too far, leave at 0
 			}
 		}
 

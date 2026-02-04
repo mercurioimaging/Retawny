@@ -313,8 +313,16 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask, double
 			for (int x = 0; x < maskConverted.width(); ++x) {
 				const QRgb pixel = scan[x];
 				int gray = qGray(pixel);
-				// Black (low values) = usable -> 255, White (high values) = masked -> 0
-				maskRow[x] = (gray < 128) ? 255 : 0;
+				// For Voronoi masks (sharp mode): preserve gradient
+				// For PC_ masks: binarize (black = usable -> 255, white = masked -> 0)
+				if (sharp) {
+					// Preserve full grayscale range for gradient masks (inverted)
+					// Black (low) = usable -> 255, White (high) = masked -> 0
+					maskRow[x] = 255 - gray;
+				} else {
+					// Binarize for PC_ masks
+					maskRow[x] = (gray < 128) ? 255 : 0;
+				}
 			}
 		}
 	} else {
