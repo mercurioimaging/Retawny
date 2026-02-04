@@ -176,9 +176,16 @@ int main(int argc, char *argv[]) {
 		// Load mask if available
 		loader.loadMask(&tile, nullptr);
 		
+		// Invert Voronoi masks (they use standard logic: 0=masked, 255=valid)
+		// PC_ masks use inverted logic (black=valid, white=masked) and are converted in buildCoverageMask
+		bool isVoronoiMask = !tile.generatedMaskPath.isEmpty();
+		if (isVoronoiMask && !tile.mask.isNull()) {
+			// Invert: 0 <-> 255
+			tile.mask.invertPixels();
+		}
+		
 		// Build coverage mask with feathering (using loaded mask if available)
 		// Use sharp=true for Voronoi masks (they already have gradient), false for PC_ masks
-		bool isVoronoiMask = !tile.generatedMaskPath.isEmpty();
 		cv::Mat mask = buildCoverageMask(tile.image, tile.mask, featherRadius, isVoronoiMask);
 		
 		// Unload mask and tile to free memory
