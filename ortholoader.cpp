@@ -91,21 +91,12 @@ bool OrthoLoader::loadFromDirectory(const QString &directoryPath, QString *error
 			continue;
 		}
 
-		// Load image temporarily to get dimensions for offset calculation
-		QImage tempImage(imagePath);
-		if (tempImage.isNull()) {
-			if (errorMessage)
-				*errorMessage = QStringLiteral("Failed to load image %1").arg(imagePath);
-			return false;
-		}
-
 		Tile tile;
 		tile.name = QFileInfo(imagePath).fileName();
 		tile.imagePath = imagePath;
 		tile.maskPath = resolveMaskPath(imagePath);
 		
-		// Store dimensions temporarily in image for offset calculation
-		tile.image = tempImage.convertToFormat(QImage::Format_ARGB32);
+
 		
 		if (!computeTileOffset(record, &tile, tfwFileName, errorMessage))
 			return false;
@@ -244,7 +235,7 @@ QString OrthoLoader::resolveMaskPath(const QString &imagePath) const {
 	const QString fileName = imageInfo.fileName();
 	const QString dirPath = imageInfo.absolutePath();
 	
-	// Replace Ort_ prefix with PC_ to find mask
+	// Try to find mask by replacing Ort_ with PC_
 	if (fileName.startsWith(QStringLiteral("Ort_"), Qt::CaseInsensitive)) {
 		QString maskFileName = fileName;
 		maskFileName.replace(0, 4, QStringLiteral("PC_"));
@@ -253,6 +244,7 @@ QString OrthoLoader::resolveMaskPath(const QString &imagePath) const {
 			return maskPath;
 	}
 	
+	// No mask found - will use magenta detection fallback
 	return QString();
 }
 
