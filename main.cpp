@@ -19,12 +19,13 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask = QImag
 
 
 int main(int argc, char *argv[]) {
-	if (argc < 3 || argc > 5) {
-		cerr << "Usage: " << argv[0] << " <input_folder> <output.png> [num_bands] [feather_radius]" << endl;
+	if (argc < 3 || argc > 6) {
+		cerr << "Usage: " << argv[0] << " <input_folder> <output.png> [num_bands] [feather_radius] [overlap_margin]" << endl;
 		cerr << "  <input_folder>: Folder containing TIFF files" << endl;
 		cerr << "  <output.png>: Output PNG image path" << endl;
 		cerr << "  [num_bands]: Optional number of bands for MultiBandBlender (default: 14)" << endl;
 		cerr << "  [feather_radius]: Optional feathering radius in pixels (default: 512.0)" << endl;
+		cerr << "  [overlap_margin]: Optional Voronoi mask overlap margin in pixels (default: 20.0)" << endl;
 		return 1;
 	}
 
@@ -44,11 +45,21 @@ int main(int argc, char *argv[]) {
 	}
 	
 	double featherRadius = 512.0; // Default value
-	if (argc == 5) {
+	if (argc >= 5) {
 		bool ok = false;
 		featherRadius = QString::fromUtf8(argv[4]).toDouble(&ok);
 		if (!ok || featherRadius < 0.0) {
 			cerr << "Invalid feather_radius value. Must be >= 0." << endl;
+			return 1;
+		}
+	}
+	
+	double overlapMargin = 20.0; // Default value
+	if (argc == 6) {
+		bool ok = false;
+		overlapMargin = QString::fromUtf8(argv[5]).toDouble(&ok);
+		if (!ok || overlapMargin < 0.0) {
+			cerr << "Invalid overlap_margin value. Must be >= 0." << endl;
 			return 1;
 		}
 	}
@@ -59,6 +70,7 @@ int main(int argc, char *argv[]) {
 	cout << "  Output file: " << qPrintable(outputPath) << endl;
 	cout << "  Num bands: " << numBands << endl;
 	cout << "  Feather radius: " << featherRadius << " pixels" << endl;
+	cout << "  Overlap margin: " << overlapMargin << " pixels" << endl;
 	cout << endl;
 
 
@@ -85,7 +97,20 @@ int main(int argc, char *argv[]) {
 	     << duration_cast<milliseconds>(t2 - t1).count() << " ms" << endl;
 	cout << endl;
 
-	cout << "[2/5] Preparing blender..." << endl;
+	cout << "[2/6] Generating Voronoi masks..." << endl;
+	auto t2a = high_resolution_clock::now();
+	
+	if (!loader.generateVoronoiMasks(overlapMargin, &errorMessage)) {
+		cerr << "Voronoi mask generation failed: " << qPrintable(errorMessage) << endl;
+		return 1;
+	}
+	
+	auto t2b = high_resolution_clock::now();
+	cout << "  Voronoi masks generated in " 
+	     << duration_cast<milliseconds>(t2b - t2a).count() << " ms" << endl;
+	cout << endl;
+
+	cout << "[3/6] Preparing blender..." << endl;
 	auto t3 = high_resolution_clock::now();
 	
 	const QSize canvasSize = loader.canvasSize();
@@ -121,7 +146,7 @@ int main(int argc, char *argv[]) {
 	cout << "  Blender ready in " << duration_cast<milliseconds>(t4 - t3).count() << " ms" << endl;
 	cout << endl;
 
-	cout << "[3/5] Processing and feeding tiles..." << endl;
+	cout << "[4/6] Processing and feeding tiles..." << endl;
 	auto t5 = high_resolution_clock::now();
 	
 	bool fedAny = false;
@@ -152,7 +177,9 @@ int main(int argc, char *argv[]) {
 		loader.loadMask(&tile, nullptr);
 		
 		// Build coverage mask with feathering (using loaded mask if available)
-		cv::Mat mask = buildCoverageMask(tile.image, tile.mask, featherRadius, false);
+		// Use sharp=true for Voronoi masks (they already have gradient), false for PC_ masks
+		bool isVoronoiMask = !tile.generatedMaskPath.isEmpty();
+		cv::Mat mask = buildCoverageMask(tile.image, tile.mask, featherRadius, isVoronoiMask);
 		
 		// Unload mask and tile to free memory
 		loader.unloadMask(&tile);
@@ -187,7 +214,7 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	cout << "[4/5] Blending..." << endl;
+	cout << "[5/6] Blending..." << endl;
 	auto t7 = high_resolution_clock::now();
 	
 	cv::Mat blended, blendedMask;
@@ -201,7 +228,7 @@ int main(int argc, char *argv[]) {
 	cout << "  Blending completed in " << duration_cast<seconds>(t8 - t7).count() << " seconds" << endl;
 	cout << endl;
 
-	cout << "[5/5] Saving output..." << endl;
+	cout << "[6/6] Saving output..." << endl;
 	auto t9 = high_resolution_clock::now();
 	
 	cv::Mat blended8u;

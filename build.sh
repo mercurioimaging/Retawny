@@ -4,4 +4,8 @@ cd "$(dirname "$0")"
 qmake retawny.pro
 sed -i '' 's/-framework AGL -framework OpenGL/-framework OpenGL/g' Makefile
 sed -i '' 's|-I/Applications[^ ]*AGL.framework/Headers/||g' Makefile
-make
+if [ "$1" = "clean" ]; then
+	make clean
+else
+	make
+fi
