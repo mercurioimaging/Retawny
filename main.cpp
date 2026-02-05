@@ -1,10 +1,13 @@
 #include "ortholoader.h"
+#include "dualmaskblender.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/core/ocl.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/stitching/detail/blenders.hpp>
+
+#include <QFileInfo>
 
 #include <iostream>
 #include <sys/resource.h>
@@ -19,13 +22,15 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask = QImag
 
 
 int main(int argc, char *argv[]) {
-	if (argc < 3 || argc > 6) {
+	if (argc < 3 || argc > 8) {
 		cerr << "Usage: " << argv[0] << " <input_folder> <output.png> [num_bands] [feather_radius] [overlap_margin]" << endl;
 		cerr << "  <input_folder>: Folder containing TIFF files" << endl;
 		cerr << "  <output.png>: Output PNG image path" << endl;
 		cerr << "  [num_bands]: Optional number of bands for MultiBandBlender (default: 14)" << endl;
 		cerr << "  [feather_radius]: Optional feathering radius in pixels (default: 512.0)" << endl;
 		cerr << "  [overlap_margin]: Optional Voronoi mask overlap margin in pixels (default: 20.0)" << endl;
+		cerr << "  [use_voronoi]: Optional use Voronoi masks for blending (true/false, default: true)" << endl;
+		cerr << "  [debug]: Optional debug mode to save masks next to output (debug/true/1, default: false)" << endl;
 		return 1;
 	}
 
@@ -55,12 +60,28 @@ int main(int argc, char *argv[]) {
 	}
 	
 	double overlapMargin = 20.0; // Default value
-	if (argc == 6) {
+	if (argc >= 6) {
 		bool ok = false;
 		overlapMargin = QString::fromUtf8(argv[5]).toDouble(&ok);
 		if (!ok || overlapMargin < 0.0) {
 			cerr << "Invalid overlap_margin value. Must be >= 0." << endl;
 			return 1;
+		}
+	}
+	
+	bool useVoronoiMasks = true; // Default: use dual-mask blending
+	if (argc >= 7) {
+		QString voronoiArg = QString::fromUtf8(argv[6]).toLower();
+		if (voronoiArg == "false" || voronoiArg == "0" || voronoiArg == "no") {
+			useVoronoiMasks = false;
+		}
+	}
+	
+	bool debugMode = false; // Default: no debug output
+	if (argc >= 8) {
+		QString debugArg = QString::fromUtf8(argv[7]).toLower();
+		if (debugArg == "debug" || debugArg == "--debug" || debugArg == "true" || debugArg == "1") {
+			debugMode = true;
 		}
 	}
 	
@@ -71,6 +92,8 @@ int main(int argc, char *argv[]) {
 	cout << "  Num bands: " << numBands << endl;
 	cout << "  Feather radius: " << featherRadius << " pixels" << endl;
 	cout << "  Overlap margin: " << overlapMargin << " pixels" << endl;
+	cout << "  Use Voronoi masks: " << (useVoronoiMasks ? "Yes" : "No") << endl;
+	cout << "  Debug mode: " << (debugMode ? "Yes" : "No") << endl;
 	cout << endl;
 
 
@@ -97,18 +120,23 @@ int main(int argc, char *argv[]) {
 	     << duration_cast<milliseconds>(t2 - t1).count() << " ms" << endl;
 	cout << endl;
 
-	cout << "[2/6] Generating Voronoi masks..." << endl;
-	auto t2a = high_resolution_clock::now();
-	
-	if (!loader.generateVoronoiMasks(overlapMargin, &errorMessage)) {
-		cerr << "Voronoi mask generation failed: " << qPrintable(errorMessage) << endl;
-		return 1;
+	if (useVoronoiMasks) {
+		cout << "[2/6] Generating Voronoi masks..." << endl;
+		auto t2a = high_resolution_clock::now();
+		
+		if (!loader.generateVoronoiMasks(overlapMargin, &errorMessage)) {
+			cerr << "Voronoi mask generation failed: " << qPrintable(errorMessage) << endl;
+			return 1;
+		}
+		
+		auto t2b = high_resolution_clock::now();
+		cout << "  Voronoi masks generated in " 
+		     << duration_cast<milliseconds>(t2b - t2a).count() << " ms" << endl;
+		cout << endl;
+	} else {
+		cout << "[2/6] Skipping Voronoi masks (using PC_ masks only)..." << endl;
+		cout << endl;
 	}
-	
-	auto t2b = high_resolution_clock::now();
-	cout << "  Voronoi masks generated in " 
-	     << duration_cast<milliseconds>(t2b - t2a).count() << " ms" << endl;
-	cout << endl;
 
 	cout << "[3/6] Preparing blender..." << endl;
 	auto t3 = high_resolution_clock::now();
@@ -139,7 +167,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	const cv::Rect roi(0, 0, canvasSize.width(), canvasSize.height());
-	cv::detail::MultiBandBlender blender(false, numBands);
+	DualMaskMultiBandBlender blender(numBands);
 	blender.prepare(roi);
 	
 	auto t4 = high_resolution_clock::now();
@@ -173,39 +201,77 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 
-		// Load mask if available
-		loader.loadMask(&tile, nullptr);
+		// Build weight mask from PC_ mask (for weight calculation)
+		// PC_ masks on disk: black (0) = utile, white (255) = masqué
+		// After QImage loads: inverted to white (255) = utile, black (0) = masqué
+		// buildCoverageMask will handle the inversion internally
+		loader.loadPCMask(&tile, nullptr);
+		QImage pcMask = tile.mask;
+		cv::Mat weightMask = buildCoverageMask(tile.image, pcMask, featherRadius, false);
 		
-		// Invert Voronoi masks (they use standard logic: 0=masked, 255=valid)
-		// PC_ masks use inverted logic (black=valid, white=masked) and are converted in buildCoverageMask
-		bool isVoronoiMask = !tile.generatedMaskPath.isEmpty();
-		if (isVoronoiMask && !tile.mask.isNull()) {
-			// Invert: 0 <-> 255
-			tile.mask.invertPixels();
+		// DEBUG: Save weight mask next to output file
+		if (debugMode) {
+			QFileInfo outputInfo(outputPath);
+			QString debugDir = outputInfo.absolutePath();
+			QString baseName = outputInfo.completeBaseName();
+			QString weightMaskPath = debugDir + "/" + baseName + "_weight_" + tile.name.split('.').first() + ".png";
+			if (cv::imwrite(weightMaskPath.toStdString(), weightMask)) {
+				cout << "    Saved weight mask: " << qPrintable(weightMaskPath) << endl;
+			}
 		}
 		
-		// Build coverage mask with feathering (using loaded mask if available)
-		// Use sharp=true for Voronoi masks (they already have gradient), false for PC_ masks
-		cv::Mat mask = buildCoverageMask(tile.image, tile.mask, featherRadius, isVoronoiMask);
+		// Build blend mask from Voronoi mask (for pixel blending)
+		// Voronoi masks: white (255) = utile, black (0) = inutile
+		cv::Mat blendMask;
+		if (useVoronoiMasks && !tile.generatedMaskPath.isEmpty()) {
+			// Use Voronoi mask for blending
+			QImage voronoiMask(tile.generatedMaskPath);
+			if (!voronoiMask.isNull()) {
+				// No inversion needed - QImage loads Voronoi correctly
+				blendMask = buildCoverageMask(tile.image, voronoiMask, featherRadius, true);
+				
+				// DEBUG: Save blend mask next to output file
+				if (debugMode) {
+					QFileInfo outputInfo(outputPath);
+					QString debugDir = outputInfo.absolutePath();
+					QString baseName = outputInfo.completeBaseName();
+					QString blendMaskPath = debugDir + "/" + baseName + "_blend_" + tile.name.split('.').first() + ".png";
+					if (cv::imwrite(blendMaskPath.toStdString(), blendMask)) {
+						cout << "    Saved blend mask: " << qPrintable(blendMaskPath) << endl;
+					}
+				}
+			}
+		}
+		
+		// Fallback: if Voronoi disabled or no Voronoi mask, use weight mask for both
+		if (blendMask.empty()) {
+			blendMask = weightMask.clone();
+		}
 		
 		// Unload mask and tile to free memory
 		loader.unloadMask(&tile);
 		loader.unloadTile(&tile);
 		
-		if (mask.empty() || cv::countNonZero(mask) == 0) {
-			cerr << " FAILED: empty or zero mask" << endl;
+		if (weightMask.empty() || cv::countNonZero(weightMask) == 0) {
+			cerr << " FAILED: empty or zero weight mask" << endl;
+			return 1;
+		}
+		if (blendMask.empty() || cv::countNonZero(blendMask) == 0) {
+			cerr << " FAILED: empty or zero blend mask" << endl;
 			return 1;
 		}
 		
-		cv::Scalar avgColor = cv::mean(bgr, mask);
+		// Use blend mask for filling masked areas with average color
+		cv::Scalar avgColor = cv::mean(bgr, blendMask);
 
-		// Fill only pixels where mask is zero with average color
-		cv::Mat zeroMask = (mask == 0);
+		// Fill only pixels where blend mask is zero with average color
+		cv::Mat zeroMask = (blendMask == 0);
 		bgr.setTo(avgColor, zeroMask);
 
 		cv::Mat img16s;
 		bgr.convertTo(img16s, CV_16SC3);
-		blender.feed(img16s, mask, cv::Point(tile.x, tile.y));
+		// FIX: weight_mask (PC_ feathered) for accumulation, blend_mask (Voronoi sharp) for pixel blending
+		blender.feed(img16s, weightMask, blendMask, cv::Point(tile.x, tile.y));
 		fedAny = true;
 		
 		auto tileEnd = high_resolution_clock::now();
@@ -303,7 +369,9 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask, double
 
 	cv::Mat mask;
 	
-	// Use loaded mask if available (black = usable, white = masked)
+	// Use loaded mask if available
+	// PC_ masks (sharp=false): black (0) = utile, white (255) = inutile
+	// Voronoi masks (sharp=true): white (255) = utile, black (0) = inutile
 	if (!loadedMask.isNull()) {
 		QImage maskConverted = loadedMask.convertToFormat(QImage::Format_ARGB32);
 		mask = cv::Mat(maskConverted.height(), maskConverted.width(), CV_8UC1, cv::Scalar(0));
@@ -313,14 +381,14 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask, double
 			for (int x = 0; x < maskConverted.width(); ++x) {
 				const QRgb pixel = scan[x];
 				int gray = qGray(pixel);
-				// For Voronoi masks (sharp mode): preserve gradient
-				// For PC_ masks: binarize (black = usable -> 255, white = masked -> 0)
+				// PC_ on disk: black (0) = utile, white (255) = masqué
+				// QImage loads it as-is (NO automatic inversion)
+				// Voronoi: white (255) = utile, black (0) = masqué
 				if (sharp) {
-					// Preserve full grayscale range for gradient masks (inverted)
-					// Black (low) = usable -> 255, White (high) = masked -> 0
-					maskRow[x] = 255 - gray;
+					// Voronoi: preserve gradient (already 255=utile from generation)
+					maskRow[x] = gray;
 				} else {
-					// Binarize for PC_ masks
+					// PC_: invert and binarize (black/0=utile → 255, white/255=masqué → 0)
 					maskRow[x] = (gray < 128) ? 255 : 0;
 				}
 			}
@@ -368,9 +436,6 @@ cv::Mat buildCoverageMask(const QImage &source, const QImage &loadedMask, double
 	// Convert to 8-bit mask
 	cv::Mat feathered;
 	combinedDistance.convertTo(feathered, CV_8UC1, 255.0);
-
-	// Zero out original masked pixels
-	feathered.setTo(0, mask == 0);
 
 	return feathered;
 }

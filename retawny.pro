@@ -12,10 +12,12 @@ PKGCONFIG += opencv4
 
 SOURCES += \
     main.cpp \
-    ortholoader.cpp
+    ortholoader.cpp \
+    dualmaskblender.cpp
 
 HEADERS += \
-    ortholoader.h
+    ortholoader.h \
+    dualmaskblender.h
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

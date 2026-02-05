@@ -326,6 +326,26 @@ bool OrthoLoader::loadMask(Tile *tile, QString *errorMessage) {
 	return false;
 }
 
+bool OrthoLoader::loadPCMask(Tile *tile, QString *errorMessage) {
+	if (!tile) {
+		if (errorMessage)
+			*errorMessage = QStringLiteral("Invalid tile pointer");
+		return false;
+	}
+
+	// Load only PC_ mask (ignore Voronoi)
+	if (!tile->maskPath.isEmpty() && QFileInfo::exists(tile->maskPath)) {
+		QImage mask(tile->maskPath);
+		if (!mask.isNull()) {
+			tile->mask = mask.convertToFormat(QImage::Format_ARGB32);
+			return true;
+		}
+	}
+
+	// No PC_ mask available
+	return false;
+}
+
 void OrthoLoader::unloadMask(Tile *tile) {
 	if (!tile)
 		return;

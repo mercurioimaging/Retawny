@@ -1,12 +1,13 @@
 # ReTawny V2
 
-A high-performance image blending tool for creating seamless orthomosaics from multiple georeferenced tiles using OpenCV's MultiBandBlender with automatic Voronoi-based mask generation.
+A high-performance image blending tool for creating seamless orthomosaics from multiple georeferenced tiles using OpenCV's MultiBandBlender with dual-mask blending system.
 
 ## Features
 
+- **Dual-mask blending** - Separate masks for weight calculation (PC_) and pixel blending (Voronoi)
 - **Voronoi mask generation** - Automatic mask creation based on distance to tile centers
-- **Minimal seam transitions** - Configurable overlap margin (default: 20px) for precise blending
-- **PC_ mask integration** - Respects invalid regions from source masks (white = masked, black = valid)
+- **Minimal ghosting** - Sharp Voronoi boundaries prevent misalignment artifacts
+- **Smooth gradients** - PC_ masks provide wide feathering for homogeneous surfaces
 - **Multi-band blending** - Configurable number of bands for smooth transitions (default: 14)
 - **Memory-efficient** - Automatic OpenCL fallback for large images
 - **Georeferencing support** - Via Orthophotomosaic.tfw and MTDOrtho.xml
@@ -14,7 +15,7 @@ A high-performance image blending tool for creating seamless orthomosaics from m
 ## Usage
 
 ```bash
-./retawny.app/Contents/MacOS/retawny <input_folder> <output.png> [num_bands] [feather_radius] [overlap_margin]
+./retawny.app/Contents/MacOS/retawny <input_folder> <output.png> [num_bands] [feather_radius] [overlap_margin] [use_voronoi] [debug]
 ```
 
 ### Parameters
@@ -24,11 +25,24 @@ A high-performance image blending tool for creating seamless orthomosaics from m
 - `num_bands` - (Optional) Number of bands for MultiBandBlender (default: 14, range: 0-50)
 - `feather_radius` - (Optional) Feathering radius for PC_ masks in pixels (default: 512.0)
 - `overlap_margin` - (Optional) Voronoi overlap margin in pixels (default: 20.0)
+- `use_voronoi` - (Optional) Enable dual-mask blending with Voronoi masks (true/false/1/0/yes/no, default: true)
+- `debug` - (Optional) Save weight and blend masks for each tile next to output (debug/true/1, default: false)
 
-### Example
+### Examples
 
+**Dual-mask blending (default):**
 ```bash
-./retawny.app/Contents/MacOS/retawny ./tiles output.png 12 512 20
+./retawny.app/Contents/MacOS/retawny ./tiles output.png 12 64 20
+```
+
+**PC_ masks only (no Voronoi):**
+```bash
+./retawny.app/Contents/MacOS/retawny ./tiles output.png 12 512 20 false
+```
+
+**Debug mode (save all masks):**
+```bash
+./retawny.app/Contents/MacOS/retawny ./tiles output.png 12 64 20 true debug
 ```
 
 ## Build (macOS)
@@ -78,13 +92,38 @@ ReTawny V2 automatically generates optimal blending masks based on Voronoi diagr
 - `MTDOrtho.xml` - Metadata file with canvas dimensions
 - `PC_*.tif` - Pre-computed masks (black = valid, white = masked)
 
+## Dual-Mask Blending System
+
+ReTawny V2 uses two separate masks per tile for optimal blending quality:
+
+### Weight Mask (PC_)
+- **Purpose**: Controls how much weight each tile contributes to the final result
+- **Source**: PC_ mask files (pre-computed coverage masks)
+- **Processing**: Binarized with feathering applied at borders and masked regions
+- **Benefits**: Wide, smooth gradients ensure homogeneous surface appearance
+
+### Blend Mask (Voronoi)
+- **Purpose**: Controls actual pixel blending to avoid ghosting
+- **Source**: Auto-generated Voronoi masks based on tile centers
+- **Processing**: Gradient generated at Voronoi frontiers (overlap_margin width)
+- **Benefits**: Sharp boundaries prevent ghosting from tile misalignment
+
+### Why Two Masks?
+
+This dual-mask approach combines the best of both strategies:
+- **No ghosting**: Voronoi boundaries prevent double-vision from misaligned tiles
+- **Smooth gradients**: PC_ weights provide wide feathering for seamless surfaces
+- **Best quality**: Homogeneous appearance without alignment artifacts
+
+To disable Voronoi masks and use PC_ masks only, pass `false` as the 6th parameter.
+
 ## Processing Pipeline
 
 1. **Load Metadata** - Parse TFW files, determine tile positions and dimensions
-2. **Generate Voronoi Masks** - Create gradient masks respecting PC_ constraints (~4-7s for 12 tiles)
-3. **Prepare Blender** - Initialize MultiBandBlender with canvas size
-4. **Process Tiles** - Load tiles, apply masks, feed to blender
-5. **Blend** - Combine all tiles using multiband blending
+2. **Generate Voronoi Masks** - Create gradient masks respecting PC_ constraints (~4-7s for 12 tiles, skipped if use_voronoi=false)
+3. **Prepare Blender** - Initialize DualMaskMultiBandBlender with canvas size
+4. **Process Tiles** - Load tiles, build weight and blend masks, feed to blender
+5. **Blend** - Combine all tiles using dual-mask multiband blending
 6. **Save** - Export final result
 
 ## Performance
@@ -112,15 +151,19 @@ Typical results for 12 tiles (4576×3088 px each, 24256×12240 canvas):
 
 ### Mask Priority
 
-1. Generated Voronoi mask (`*_voronoi_mask.tif`)
-2. PC_ mask (used during Voronoi generation)
-3. Magenta pixel detection (fallback)
+**Weight Masks (PC_):**
+1. PC_ mask file (`PC_*.tif`)
+2. Magenta pixel detection in source image (fallback)
+
+**Blend Masks (Voronoi):**
+1. Generated Voronoi mask (`*_voronoi_mask.tif`) - if use_voronoi=true
+2. Falls back to weight mask if use_voronoi=false or Voronoi generation fails
 
 ## Notes
 
-- Voronoi masks are always regenerated (even if PC_ masks exist)
-- PC_ masks constrain but don't replace Voronoi masks
-- `sharp` parameter automatically set for Voronoi masks to avoid double feathering
+- Voronoi masks are always regenerated when use_voronoi=true (ensures consistency with current overlap_margin)
+- PC_ masks use feathering (feather_radius parameter) for smooth transitions
+- Voronoi masks use their built-in gradient (no additional feathering applied)
 - Statistics (time, memory) reported after completion
 
 ## Requirements

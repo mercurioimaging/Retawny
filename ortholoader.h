@@ -30,6 +30,7 @@ public:
 	bool loadTile(Tile *tile, QString *errorMessage = nullptr);
 	void unloadTile(Tile *tile);
 	bool loadMask(Tile *tile, QString *errorMessage = nullptr);
+	bool loadPCMask(Tile *tile, QString *errorMessage = nullptr);
 	void unloadMask(Tile *tile);
 
 	bool empty() const { return tiles_.isEmpty(); }
